@@ -6,7 +6,7 @@ import (
 	_ "github.com/weigj/go-odbc/driver"
 	"log"
 	"reflect"
-	"strconv"
+	"time"
 )
 
 var (
@@ -47,6 +47,7 @@ type DBStore struct {
 	pkCol     string
 	fields    []string
 	cols      []string
+	colTypies map[string]reflect.Kind
 	selectStr string
 }
 
@@ -77,6 +78,7 @@ func GetDBStore(tableName string, modelRel interface{}) (DBStore, error) {
 
 	store.fields = make([]string, n)
 	store.cols = make([]string, n)
+	store.colTypies = make(map[string]reflect.Kind)
 
 	for i := 0; i < n; i++ {
 		field := mType.Elem().Field(i)
@@ -96,6 +98,7 @@ func GetDBStore(tableName string, modelRel interface{}) (DBStore, error) {
 		}
 
 		store.fields[i] = field.Name
+		store.colTypies[field.Name] = field.Type.Kind()
 	}
 
 	store.selectStr = store.MakeSelectWithCols(store.cols)
@@ -142,7 +145,6 @@ func (this *DBStore) GetByPageAndConditionAndOrder(page, size int, conditions []
 		sql = fmt.Sprintf(SQL_SELECT_BY_PAGE_STR, size, this.selectStr, this.tableName, this.pkCol, this.pkCol, size*(page-1), this.pkCol, this.tableName, whereStr, orderStr, andWhereStr, orderStr)
 	}
 	this.lastSql = sql
-	fmt.Println(sql)
 	if conn, err := getConnection(); err != nil {
 		log.Println(err.Error())
 		return nil
@@ -160,20 +162,43 @@ func (this *DBStore) GetByPageAndConditionAndOrder(page, size int, conditions []
 				defer row.Close()
 				var resultList []interface{} = make([]interface{}, 0)
 				for row.Next() {
-					var resultRow []interface{} = make([]interface{}, len(this.cols))
+					var resultRow []interface{} = make([]interface{}, len(this.cols), len(this.cols))
 					for i, _ := range resultRow {
-						resultRow[i] = new(string)
+						switch this.colTypies[this.fields[i]] {
+						case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+							resultRow[i] = new(int)
+						case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+							resultRow[i] = new(uint)
+						case reflect.Float32, reflect.Float64:
+							resultRow[i] = new(float64)
+						case reflect.String:
+							resultRow[i] = new(string)
+						case reflect.Bool:
+							resultRow[i] = new(bool)
+						case reflect.Struct:
+							resultRow[i] = new(time.Time)
+						default:
+							//
+						}
 					}
 					if err := row.Scan(resultRow...); err != nil {
 						log.Println(err.Error())
 					} else {
 						for index, fieldName := range this.fields {
-							switch reflect.ValueOf(this.modelRel).Elem().FieldByName(fieldName).Kind() {
+							switch this.colTypies[fieldName] {
 							case reflect.String:
 								reflect.ValueOf(this.modelRel).Elem().FieldByName(fieldName).SetString(*(resultRow[index].(*string)))
-							case reflect.Int:
-								value, _ := strconv.Atoi(*(resultRow[index].(*string)))
+							case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+								value := *(resultRow[index].(*int))
 								reflect.ValueOf(this.modelRel).Elem().FieldByName(fieldName).SetInt(int64(value))
+							case reflect.Struct:
+								value := *(resultRow[index].(*time.Time))
+								// println(value.Format("2006-01-02 15:04:05"))
+								reflect.ValueOf(this.modelRel).Elem().FieldByName(fieldName).Set(reflect.ValueOf(value))
+
+							case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+							case reflect.Float32, reflect.Float64:
+							case reflect.Bool:
 							default:
 								continue
 							}
